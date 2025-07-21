@@ -88,7 +88,7 @@ def extract_metadata(record, fallback_species):
 # -------------------------
 # Function: Process species list file
 # -------------------------
-def process_species_list(csv_path, email, min_marker_count=0):
+def process_species_list(csv_path, email, min_marker_count=0, include_unlinked=False):
     species_df = pd.read_csv(csv_path, header=None, names=["Species"])
     marker_tables = defaultdict(list)
 
@@ -99,12 +99,12 @@ def process_species_list(csv_path, email, min_marker_count=0):
             metadata = extract_metadata(record, species)
             marker_tables[marker].append(metadata)
 
-    return finalize_marker_tables(marker_tables, min_marker_count)
+    return finalize_marker_tables(marker_tables, min_marker_count, include_unlinked)
 
 # -------------------------
 # Function: Process a single taxon (any level)
 # -------------------------
-def process_taxon(taxon_name, email, min_marker_count=0):
+def process_taxon(taxon_name, email, min_marker_count=0, include_unlinked=False):
     records = fetch_genbank_records(taxon_name, email)
     marker_tables = defaultdict(list)
 
@@ -114,42 +114,66 @@ def process_taxon(taxon_name, email, min_marker_count=0):
         metadata = extract_metadata(record, species_name)
         marker_tables[marker].append(metadata)
 
-    return finalize_marker_tables(marker_tables, min_marker_count)
+    return finalize_marker_tables(marker_tables, min_marker_count, include_unlinked)
 
 # -------------------------
 # Finalize and sort marker tables
 # -------------------------
-def finalize_marker_tables(marker_tables, min_marker_count):
+def finalize_marker_tables(marker_tables, min_marker_count, include_unlinked):
     sorted_markers = sorted(marker_tables.keys(), key=lambda x: (not x.startswith("_MITO_"), x))
     marker_dfs = {}
+
     for marker in sorted_markers:
         records = marker_tables[marker]
-        if min_marker_count > 0 and len(records) < min_marker_count:
-            continue
         df = pd.DataFrame(records)
-        marker_dfs[marker] = df
-        df.to_csv(f"marker_{marker.replace('/', '-')}.csv", index=False)
+
+        # Split into linked and unlinked records
+        has_keys = df[["Isolate", "Specimen_Voucher"]].notna().any(axis=1) & ~(df[["Isolate", "Specimen_Voucher"]] == "").all(axis=1)
+        df_linked = df[has_keys].copy()
+        df_unlinked = df[~has_keys].copy()
+
+        # Apply min_marker_count to linked sequences only
+        if min_marker_count > 0 and len(df_linked) < min_marker_count:
+            continue
+
+        # Save linked marker table
+        if not df_linked.empty:
+            df_linked.to_csv(f"marker_{marker.replace('/', '-')}.csv", index=False)
+            marker_dfs[marker] = df_linked
+
+        # Optionally save unlinked sequences
+        if include_unlinked and not df_unlinked.empty:
+            df_unlinked_out = df_unlinked[["Species", "GenBank_Accession", "Sequence"]]
+            df_unlinked_out.to_csv(f"voucherless_{marker.replace('/', '-')}.csv", index=False)
+
     return marker_dfs
 
 # -------------------------
 # Merge marker tables
 # -------------------------
-def merge_tables(marker_dfs, merge_on):
+def merge_tables(marker_dfs, merge_on, include_unlinked=False):
     merge_keys = merge_on if isinstance(merge_on, list) else [merge_on]
     merged_df = None
 
     for marker, df in marker_dfs.items():
         df = df.copy()
-        cols = df.columns.tolist()
+        has_merge_keys = df[merge_keys].notnull().any(axis=1)
+        df_with_keys = df[has_merge_keys]
+
+        cols = df_with_keys.columns.tolist()
         fixed_order = [col for col in ["Isolate", "Specimen_Voucher", "Species", "Type_Material"] if col in cols]
         remaining = [col for col in cols if col not in fixed_order]
-        df = df[fixed_order + remaining]
-        df.columns = [col if col in merge_keys else f"{col}_{marker}" for col in df.columns]
+        df_with_keys = df_with_keys[fixed_order + remaining]
+        df_with_keys.columns = [col if col in merge_keys else f"{col}_{marker}" for col in df_with_keys.columns]
 
         if merged_df is None:
-            merged_df = df
+            merged_df = df_with_keys
         else:
-            merged_df = pd.merge(merged_df, df, on=merge_keys, how="outer")
+            merged_df = pd.merge(merged_df, df_with_keys, on=merge_keys, how="outer")
+
+    if merged_df is None:
+        print("No sequences with mergeable voucher/isolate information found.")
+        return pd.DataFrame()
 
     species_cols = [col for col in merged_df.columns if col.startswith("Species")]
     if species_cols:
@@ -181,19 +205,21 @@ def main():
     parser.add_argument("--merge_on", choices=["Isolate", "Specimen_Voucher", "both"], default="both",
                         help="Column(s) to merge marker tables on")
     parser.add_argument("--output", default="merged_output.csv", help="Output file for merged data")
+    parser.add_argument("--include_unlinked", action="store_true", help="Include sequences without isolate or voucher info as separate tables")
 
     args = parser.parse_args()
 
     if args.csv_file:
-        marker_dfs = process_species_list(args.csv_file, args.email, args.min_marker_count)
+        marker_dfs = process_species_list(args.csv_file, args.email, args.min_marker_count, args.include_unlinked)
     else:
-        marker_dfs = process_taxon(args.taxon, args.email, args.min_marker_count)
+        marker_dfs = process_taxon(args.taxon, args.email, args.min_marker_count, args.include_unlinked)
 
-    merge_columns = ["Isolate", "Specimen_Voucher"] if args.merge_on == "both" else args.merge_on
+    merge_columns = ["Isolate", "Specimen_Voucher"] if args.merge_on == "both" else [args.merge_on]
 
-    merged_df = merge_tables(marker_dfs, merge_columns)
-    merged_df.to_csv(args.output, index=False)
-    print(f"Merged output saved to {args.output}")
+    merged_df = merge_tables(marker_dfs, merge_columns, include_unlinked=args.include_unlinked)
+    if not merged_df.empty:
+        merged_df.to_csv(args.output, index=False)
+        print(f"Merged output saved to {args.output}")
 
 if __name__ == "__main__":
     main()
