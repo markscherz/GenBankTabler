@@ -1,0 +1,199 @@
+import os
+import pandas as pd
+from Bio import Entrez, SeqIO
+from collections import defaultdict
+import argparse
+
+# -------------------------
+# Function: Fetch sequences from GenBank for a given taxonomic query
+# -------------------------
+def fetch_genbank_records(query, email):
+    Entrez.email = email
+    print(f"Searching GenBank for: {query}")
+
+    handle = Entrez.esearch(db="nucleotide", term=f"{query}[Organism]", retmax=10000)
+    record = Entrez.read(handle)
+    handle.close()
+    id_list = record["IdList"]
+
+    print(f"Found {len(id_list)} sequences for {query}")
+
+    all_seqs = []
+    if not id_list:
+        return all_seqs
+
+    for start in range(0, len(id_list), 500):
+        end = min(start + 500, len(id_list))
+        ids = id_list[start:end]
+        handle = Entrez.efetch(db="nucleotide", id=ids, rettype="gb", retmode="text")
+        records = list(SeqIO.parse(handle, "genbank"))
+        all_seqs.extend(records)
+        handle.close()
+
+    return all_seqs
+
+# -------------------------
+# Function: Extract marker name directly from gene/product qualifiers, prefer gene
+# -------------------------
+def extract_marker(record):
+    is_mito = False
+    for feature in record.features:
+        if feature.type == "source" and "organelle" in feature.qualifiers:
+            if "mitochondrion" in feature.qualifiers["organelle"][0].lower():
+                is_mito = True
+                break
+
+    for feature in record.features:
+        if feature.type in ["gene", "CDS", "misc_feature", "rRNA", "tRNA", "ncRNA"]:
+            if "gene" in feature.qualifiers:
+                marker_name = feature.qualifiers["gene"][0].strip().upper()
+                return ("_MITO_" + marker_name) if is_mito else marker_name
+
+    for feature in record.features:
+        if feature.type in ["gene", "CDS", "misc_feature", "rRNA", "tRNA", "ncRNA"]:
+            if "product" in feature.qualifiers:
+                marker_name = feature.qualifiers["product"][0].strip().upper()
+                return ("_MITO_" + marker_name) if is_mito else marker_name
+
+    return "Unknown"
+
+# -------------------------
+# Function: Extract metadata from GenBank record
+# -------------------------
+def extract_metadata(record, fallback_species):
+    metadata = {
+        "Isolate": record.annotations.get("isolate", ""),
+        "Specimen_Voucher": record.annotations.get("specimen_voucher", ""),
+        "Species": record.annotations.get("organism", fallback_species),
+        "Geo_Loc_Name": "",
+        "Publication_Title": "",
+        "GenBank_Accession": record.id,
+        "Sequence": str(record.seq),
+        "Type_Material": ""
+    }
+
+    for feature in record.features:
+        if feature.type == "source":
+            metadata["Geo_Loc_Name"] = feature.qualifiers.get("country", [""])[0]
+            metadata["Isolate"] = feature.qualifiers.get("isolate", [metadata["Isolate"]])[0]
+            metadata["Specimen_Voucher"] = feature.qualifiers.get("specimen_voucher", [metadata["Specimen_Voucher"]])[0]
+            if "type_material" in feature.qualifiers:
+                metadata["Type_Material"] = feature.qualifiers["type_material"][0]
+
+    if "references" in record.annotations and record.annotations["references"]:
+        metadata["Publication_Title"] = record.annotations["references"][0].title
+
+    return metadata
+
+# -------------------------
+# Function: Process species list file
+# -------------------------
+def process_species_list(csv_path, email, min_marker_count=0):
+    species_df = pd.read_csv(csv_path, header=None, names=["Species"])
+    marker_tables = defaultdict(list)
+
+    for species in species_df["Species"]:
+        records = fetch_genbank_records(species, email)
+        for record in records:
+            marker = extract_marker(record)
+            metadata = extract_metadata(record, species)
+            marker_tables[marker].append(metadata)
+
+    return finalize_marker_tables(marker_tables, min_marker_count)
+
+# -------------------------
+# Function: Process a single taxon (any level)
+# -------------------------
+def process_taxon(taxon_name, email, min_marker_count=0):
+    records = fetch_genbank_records(taxon_name, email)
+    marker_tables = defaultdict(list)
+
+    for record in records:
+        species_name = record.annotations.get("organism", taxon_name)
+        marker = extract_marker(record)
+        metadata = extract_metadata(record, species_name)
+        marker_tables[marker].append(metadata)
+
+    return finalize_marker_tables(marker_tables, min_marker_count)
+
+# -------------------------
+# Finalize and sort marker tables
+# -------------------------
+def finalize_marker_tables(marker_tables, min_marker_count):
+    sorted_markers = sorted(marker_tables.keys(), key=lambda x: (not x.startswith("_MITO_"), x))
+    marker_dfs = {}
+    for marker in sorted_markers:
+        records = marker_tables[marker]
+        if min_marker_count > 0 and len(records) < min_marker_count:
+            continue
+        df = pd.DataFrame(records)
+        marker_dfs[marker] = df
+        df.to_csv(f"marker_{marker.replace('/', '-')}.csv", index=False)
+    return marker_dfs
+
+# -------------------------
+# Merge marker tables
+# -------------------------
+def merge_tables(marker_dfs, merge_on):
+    merge_keys = merge_on if isinstance(merge_on, list) else [merge_on]
+    merged_df = None
+
+    for marker, df in marker_dfs.items():
+        df = df.copy()
+        cols = df.columns.tolist()
+        fixed_order = [col for col in ["Isolate", "Specimen_Voucher", "Species", "Type_Material"] if col in cols]
+        remaining = [col for col in cols if col not in fixed_order]
+        df = df[fixed_order + remaining]
+        df.columns = [col if col in merge_keys else f"{col}_{marker}" for col in df.columns]
+
+        if merged_df is None:
+            merged_df = df
+        else:
+            merged_df = pd.merge(merged_df, df, on=merge_keys, how="outer")
+
+    species_cols = [col for col in merged_df.columns if col.startswith("Species")]
+    if species_cols:
+        merged_df["Species"] = merged_df[species_cols].bfill(axis=1).iloc[:, 0]
+        merged_df.drop(columns=species_cols, inplace=True)
+
+    type_material_cols = [col for col in merged_df.columns if col.startswith("Type_Material")]
+    if type_material_cols:
+        merged_df["Type_Material"] = merged_df[type_material_cols].bfill(axis=1).iloc[:, 0]
+        merged_df.drop(columns=type_material_cols, inplace=True)
+    else:
+        merged_df["Type_Material"] = ""
+
+    cols = merged_df.columns.tolist()
+    reordered = ["Isolate", "Specimen_Voucher", "Species", "Type_Material"] + [col for col in cols if col not in ["Isolate", "Specimen_Voucher", "Species", "Type_Material"]]
+    return merged_df[reordered]
+
+# -------------------------
+# Main
+# -------------------------
+def main():
+    parser = argparse.ArgumentParser(description="Download and process GenBank sequences by species or taxon")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--csv_file", help="Path to CSV file with species names (one per line)")
+    group.add_argument("--taxon", help="Name of taxonomic group to search (e.g., genus, family)")
+
+    parser.add_argument("--email", required=True, help="Email for NCBI Entrez")
+    parser.add_argument("--min_marker_count", type=int, default=0, help="Remove marker tables with fewer than this number of entries")
+    parser.add_argument("--merge_on", choices=["Isolate", "Specimen_Voucher", "both"], default="both",
+                        help="Column(s) to merge marker tables on")
+    parser.add_argument("--output", default="merged_output.csv", help="Output file for merged data")
+
+    args = parser.parse_args()
+
+    if args.csv_file:
+        marker_dfs = process_species_list(args.csv_file, args.email, args.min_marker_count)
+    else:
+        marker_dfs = process_taxon(args.taxon, args.email, args.min_marker_count)
+
+    merge_columns = ["Isolate", "Specimen_Voucher"] if args.merge_on == "both" else args.merge_on
+
+    merged_df = merge_tables(marker_dfs, merge_columns)
+    merged_df.to_csv(args.output, index=False)
+    print(f"Merged output saved to {args.output}")
+
+if __name__ == "__main__":
+    main()
