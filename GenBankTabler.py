@@ -7,16 +7,26 @@ import argparse
 # -------------------------
 # Function: Fetch sequences from GenBank for a given taxonomic query
 # -------------------------
-def fetch_genbank_records(query, email):
+def fetch_genbank_records(query, email, max_seqs, auto_confirm):
     Entrez.email = email
     print(f"Searching GenBank for: {query}")
 
-    handle = Entrez.esearch(db="nucleotide", term=f"{query}[Organism]", retmax=10000)
+    handle = Entrez.esearch(db="nucleotide", term=f"{query}[Organism]", retmax=1000000)
     record = Entrez.read(handle)
     handle.close()
     id_list = record["IdList"]
 
-    print(f"Found {len(id_list)} sequences for {query}")
+    total_found = len(id_list)
+    if max_seqs is not None:
+        id_list = id_list[:max_seqs]
+
+    print(f"Found {total_found} sequences for {query}. Will download {len(id_list)}.")
+
+    if not auto_confirm:
+        proceed = input("Proceed with download? (y/n): ")
+        if proceed.lower() != 'y':
+            print("Aborting.")
+            exit()
 
     all_seqs = []
     if not id_list:
@@ -88,12 +98,12 @@ def extract_metadata(record, fallback_species):
 # -------------------------
 # Function: Process species list file
 # -------------------------
-def process_species_list(csv_path, email, min_marker_count=0, include_unlinked=False):
+def process_species_list(csv_path, email, min_marker_count=0, include_unlinked=False, max_seqs=10000, auto_confirm=False):
     species_df = pd.read_csv(csv_path, header=None, names=["Species"])
     marker_tables = defaultdict(list)
 
     for species in species_df["Species"]:
-        records = fetch_genbank_records(species, email)
+        records = fetch_genbank_records(species, email, max_seqs, auto_confirm)
         for record in records:
             marker = extract_marker(record)
             metadata = extract_metadata(record, species)
@@ -104,8 +114,8 @@ def process_species_list(csv_path, email, min_marker_count=0, include_unlinked=F
 # -------------------------
 # Function: Process a single taxon (any level)
 # -------------------------
-def process_taxon(taxon_name, email, min_marker_count=0, include_unlinked=False):
-    records = fetch_genbank_records(taxon_name, email)
+def process_taxon(taxon_name, email, min_marker_count=0, include_unlinked=False, max_seqs=10000, auto_confirm=False):
+    records = fetch_genbank_records(taxon_name, email, max_seqs, auto_confirm)
     marker_tables = defaultdict(list)
 
     for record in records:
@@ -127,21 +137,17 @@ def finalize_marker_tables(marker_tables, min_marker_count, include_unlinked):
         records = marker_tables[marker]
         df = pd.DataFrame(records)
 
-        # Split into linked and unlinked records
         has_keys = df[["Isolate", "Specimen_Voucher"]].notna().any(axis=1) & ~(df[["Isolate", "Specimen_Voucher"]] == "").all(axis=1)
         df_linked = df[has_keys].copy()
         df_unlinked = df[~has_keys].copy()
 
-        # Apply min_marker_count to linked sequences only
         if min_marker_count > 0 and len(df_linked) < min_marker_count:
             continue
 
-        # Save linked marker table
         if not df_linked.empty:
             df_linked.to_csv(f"marker_{marker.replace('/', '-')}.csv", index=False)
             marker_dfs[marker] = df_linked
 
-        # Optionally save unlinked sequences
         if include_unlinked and not df_unlinked.empty:
             df_unlinked_out = df_unlinked[["Species", "GenBank_Accession", "Sequence"]]
             df_unlinked_out.to_csv(f"voucherless_{marker.replace('/', '-')}.csv", index=False)
@@ -206,13 +212,16 @@ def main():
                         help="Column(s) to merge marker tables on")
     parser.add_argument("--output", default="merged_output.csv", help="Output file for merged data")
     parser.add_argument("--include_unlinked", action="store_true", help="Include sequences without isolate or voucher info as separate tables")
+    parser.add_argument("--max_seqs", type=int, default=10000, help="Maximum number of sequences to download per search. Use -1 for unlimited.")
+    parser.add_argument("--auto_confirm", action="store_true", help="Skip confirmation prompt before downloading sequences")
 
     args = parser.parse_args()
+    max_seqs = None if args.max_seqs == -1 else args.max_seqs
 
     if args.csv_file:
-        marker_dfs = process_species_list(args.csv_file, args.email, args.min_marker_count, args.include_unlinked)
+        marker_dfs = process_species_list(args.csv_file, args.email, args.min_marker_count, args.include_unlinked, max_seqs, args.auto_confirm)
     else:
-        marker_dfs = process_taxon(args.taxon, args.email, args.min_marker_count, args.include_unlinked)
+        marker_dfs = process_taxon(args.taxon, args.email, args.min_marker_count, args.include_unlinked, max_seqs, args.auto_confirm)
 
     merge_columns = ["Isolate", "Specimen_Voucher"] if args.merge_on == "both" else [args.merge_on]
 
