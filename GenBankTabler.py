@@ -3,6 +3,7 @@ import pandas as pd
 from Bio import Entrez, SeqIO
 from collections import defaultdict
 import argparse
+from Bio.Seq import UndefinedSequenceError
 
 # -------------------------
 # Function: Fetch sequences from GenBank for a given taxonomic query
@@ -88,6 +89,11 @@ def extract_metadata(record, fallback_species):
     else:
         key = ""
 
+    try:
+        sequence_str = str(record.seq)
+    except (UndefinedSequenceError, Exception):
+        return None
+
     metadata = {
         "Isolate": isolate,
         "Specimen_Voucher": voucher,
@@ -95,7 +101,7 @@ def extract_metadata(record, fallback_species):
         "Geo_Loc_Name": "",
         "Publication_Title": "",
         "GenBank_Accession": record.id,
-        "Sequence": str(record.seq),
+        "Sequence": sequence_str,
         "Type_Material": "",
         "Specimen_Key": key
     }
@@ -123,7 +129,8 @@ def process_species_list(csv_path, email, min_marker_count=0, include_unlinked=F
         for record in records:
             marker = extract_marker(record)
             metadata = extract_metadata(record, species)
-            marker_tables[marker].append(metadata)
+            if metadata is not None:
+                marker_tables[marker].append(metadata)
 
     return finalize_marker_tables(marker_tables, min_marker_count, include_unlinked)
 
@@ -138,7 +145,8 @@ def process_taxon(taxon_name, email, min_marker_count=0, include_unlinked=False,
         species_name = record.annotations.get("organism", taxon_name)
         marker = extract_marker(record)
         metadata = extract_metadata(record, species_name)
-        marker_tables[marker].append(metadata)
+        if metadata is not None:
+            marker_tables[marker].append(metadata)
 
     return finalize_marker_tables(marker_tables, min_marker_count, include_unlinked)
 
