@@ -33,7 +33,7 @@ or
 # Usage
 `python GenBankTabler.py --csv_file species_list.csv --email yourNCBIemail@email.com --min_marker_count 5 --merge_on both`
 
-where `species_list.csv` is a csv file containing one species name per line
+where `species_list.csv` is a csv file containing one species name per line. --min_marker_count is the minimum number of sequences per marker to retain that marker. 
 
 or
 
