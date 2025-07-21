@@ -10,7 +10,12 @@ The general idea:
 4. Tables are merged into a single table by Isolate and specimen_voucher (options to use just one or the other are included), retaining information if sequence comes from type
 5. The resulting table is output. Currently all marker tables are also generated along the way.
 
-Warning: this script does not check how many files it is about to download, and has not been tested on cases where there are genome-level datasets available. It is not recommend that you run it with groups containing thousands of species or tens of thousands of sequences in GenBank. I have no idea what would happen, but it would probably not be pretty.
+**Warning:** this script does not check how many files it is about to download, and has not been tested on cases where there are genome-level datasets available. It is not recommend that you run it with groups containing thousands of species or tens of thousands of sequences in GenBank. I have no idea what would happen, but it would probably not be pretty.
+
+**Known deficiencies:** 
++ Resulting tables have to be checked manually. Markers that deviate by small name differences (e.g. Rag-1 and Rag1) are not merged into a single column.
++ If the script cannot identify a marker, it will put it into an "Unknown" column. If there are many unknown markers for the same individual, they will appear as duplicated rows of that individual. 
+
 
 # Requirements
 `bioconda`
