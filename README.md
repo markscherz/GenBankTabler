@@ -14,7 +14,8 @@ The general idea:
 
 **Known deficiencies:** 
 + Resulting tables have to be checked manually. Markers that deviate by small name differences (e.g. Rag-1 and Rag1) are not merged into a single column.
-+ If the script cannot identify a marker, it will put it into an "Unknown" column. If there are many unknown markers for the same individual, they will appear as duplicated rows of that individual. 
++ If the script cannot identify a marker, it will put it into an "Unknown" column. If there are many unknown markers for the same individual, they will appear as duplicated rows of that individual.
++ does not yet merge cases where voucher and isolate are identical. 
 
 
 # Requirements
@@ -31,17 +32,12 @@ or
 `pip install pandas biopython`
 
 # Usage
-`python GenBankTabler.py --csv_file species_list.csv --email yourNCBIemail@email.com --min_marker_count 5 --merge_on both`
+`python GenBankTabler.py --csv_file species_list.csv --email yourNCBIemail@email.com --min_marker_count 5 --merge_on both --include_unlinked`
 
-where `species_list.csv` is a csv file containing one species name per line. --min_marker_count is the minimum number of sequences per marker to retain that marker. 
+where `species_list.csv` is a csv file containing one species name per line. --min_marker_count is the minimum number of sequences per marker to retain that marker. the `--include_unlinke` flag tells it to output tables of voucherless specimens, which can be used at your discretion. If you do not specify this flag, those specimens are dropped altogether. 
 
 or
 
-`python GenBankTabler.py --taxon "taxon" --email yourNCBIemail@email.com --min_marker_count 5 --merge_on both`
+`python GenBankTabler.py --taxon "taxon" --email yourNCBIemail@email.com --min_marker_count 5 --merge_on both --include_unlinked`
 
 where "taxon" is your taxon of interest
-
-
-
-
-
