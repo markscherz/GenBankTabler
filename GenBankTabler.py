@@ -71,22 +71,38 @@ def extract_marker(record):
 # Function: Extract metadata from GenBank record
 # -------------------------
 def extract_metadata(record, fallback_species):
+    isolate = record.annotations.get("isolate", "")
+    voucher = record.annotations.get("specimen_voucher", "")
+
+    for feature in record.features:
+        if feature.type == "source":
+            isolate = feature.qualifiers.get("isolate", [isolate])[0]
+            voucher = feature.qualifiers.get("specimen_voucher", [voucher])[0]
+
+    if isolate and voucher:
+        key = f"{isolate}|{voucher}"
+    elif voucher:
+        key = f"{voucher}|{voucher}"
+    elif isolate:
+        key = f"{isolate}|{isolate}"
+    else:
+        key = ""
+
     metadata = {
-        "Isolate": record.annotations.get("isolate", ""),
-        "Specimen_Voucher": record.annotations.get("specimen_voucher", ""),
+        "Isolate": isolate,
+        "Specimen_Voucher": voucher,
         "Species": record.annotations.get("organism", fallback_species),
         "Geo_Loc_Name": "",
         "Publication_Title": "",
         "GenBank_Accession": record.id,
         "Sequence": str(record.seq),
-        "Type_Material": ""
+        "Type_Material": "",
+        "Specimen_Key": key
     }
 
     for feature in record.features:
         if feature.type == "source":
             metadata["Geo_Loc_Name"] = feature.qualifiers.get("country", [""])[0]
-            metadata["Isolate"] = feature.qualifiers.get("isolate", [metadata["Isolate"]])[0]
-            metadata["Specimen_Voucher"] = feature.qualifiers.get("specimen_voucher", [metadata["Specimen_Voucher"]])[0]
             if "type_material" in feature.qualifiers:
                 metadata["Type_Material"] = feature.qualifiers["type_material"][0]
 
@@ -137,7 +153,7 @@ def finalize_marker_tables(marker_tables, min_marker_count, include_unlinked):
         records = marker_tables[marker]
         df = pd.DataFrame(records)
 
-        has_keys = df[["Isolate", "Specimen_Voucher"]].notna().any(axis=1) & ~(df[["Isolate", "Specimen_Voucher"]] == "").all(axis=1)
+        has_keys = df["Specimen_Key"] != ""
         df_linked = df[has_keys].copy()
         df_unlinked = df[~has_keys].copy()
 
@@ -158,43 +174,49 @@ def finalize_marker_tables(marker_tables, min_marker_count, include_unlinked):
 # Merge marker tables
 # -------------------------
 def merge_tables(marker_dfs, merge_on, include_unlinked=False):
-    merge_keys = merge_on if isinstance(merge_on, list) else [merge_on]
     merged_df = None
 
     for marker, df in marker_dfs.items():
         df = df.copy()
-        has_merge_keys = df[merge_keys].notnull().any(axis=1)
-        df_with_keys = df[has_merge_keys]
-
-        cols = df_with_keys.columns.tolist()
-        fixed_order = [col for col in ["Isolate", "Specimen_Voucher", "Species", "Type_Material"] if col in cols]
-        remaining = [col for col in cols if col not in fixed_order]
-        df_with_keys = df_with_keys[fixed_order + remaining]
-        df_with_keys.columns = [col if col in merge_keys else f"{col}_{marker}" for col in df_with_keys.columns]
+        df.columns = [col if col in ["Specimen_Key"] else f"{col}_{marker}" for col in df.columns]
 
         if merged_df is None:
-            merged_df = df_with_keys
+            merged_df = df
         else:
-            merged_df = pd.merge(merged_df, df_with_keys, on=merge_keys, how="outer")
+            merged_df = pd.merge(merged_df, df, on="Specimen_Key", how="outer")
 
     if merged_df is None:
         print("No sequences with mergeable voucher/isolate information found.")
         return pd.DataFrame()
 
-    species_cols = [col for col in merged_df.columns if col.startswith("Species")]
+    species_cols = [col for col in merged_df.columns if col.startswith("Species_")]
     if species_cols:
         merged_df["Species"] = merged_df[species_cols].bfill(axis=1).iloc[:, 0]
         merged_df.drop(columns=species_cols, inplace=True)
 
-    type_material_cols = [col for col in merged_df.columns if col.startswith("Type_Material")]
+    type_material_cols = [col for col in merged_df.columns if col.startswith("Type_Material_")]
     if type_material_cols:
         merged_df["Type_Material"] = merged_df[type_material_cols].bfill(axis=1).iloc[:, 0]
         merged_df.drop(columns=type_material_cols, inplace=True)
     else:
         merged_df["Type_Material"] = ""
 
+    isolate_cols = [col for col in merged_df.columns if col.startswith("Isolate_")]
+    if isolate_cols:
+        merged_df["Isolate"] = merged_df[isolate_cols].bfill(axis=1).iloc[:, 0]
+        merged_df.drop(columns=isolate_cols, inplace=True)
+    else:
+        merged_df["Isolate"] = ""
+
+    voucher_cols = [col for col in merged_df.columns if col.startswith("Specimen_Voucher_")]
+    if voucher_cols:
+        merged_df["Specimen_Voucher"] = merged_df[voucher_cols].bfill(axis=1).iloc[:, 0]
+        merged_df.drop(columns=voucher_cols, inplace=True)
+    else:
+        merged_df["Specimen_Voucher"] = ""
+
     cols = merged_df.columns.tolist()
-    reordered = ["Isolate", "Specimen_Voucher", "Species", "Type_Material"] + [col for col in cols if col not in ["Isolate", "Specimen_Voucher", "Species", "Type_Material"]]
+    reordered = ["Isolate", "Specimen_Voucher", "Species", "Type_Material"] + [col for col in cols if col not in ["Specimen_Key", "Isolate", "Specimen_Voucher", "Species", "Type_Material"]]
     return merged_df[reordered]
 
 # -------------------------
@@ -223,9 +245,7 @@ def main():
     else:
         marker_dfs = process_taxon(args.taxon, args.email, args.min_marker_count, args.include_unlinked, max_seqs, args.auto_confirm)
 
-    merge_columns = ["Isolate", "Specimen_Voucher"] if args.merge_on == "both" else [args.merge_on]
-
-    merged_df = merge_tables(marker_dfs, merge_columns, include_unlinked=args.include_unlinked)
+    merged_df = merge_tables(marker_dfs, merge_on=args.merge_on, include_unlinked=args.include_unlinked)
     if not merged_df.empty:
         merged_df.to_csv(args.output, index=False)
         print(f"Merged output saved to {args.output}")
