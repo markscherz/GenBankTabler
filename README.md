@@ -14,8 +14,6 @@ The general idea:
 **Known deficiencies:** 
 + Resulting tables have to be checked manually. Markers that deviate by small name differences (e.g. Rag-1 and Rag1) are not merged into a single column.
 + If the script cannot identify a marker, it will put it into an "Unknown" column. If there are many unknown markers for the same individual, they will appear as duplicated rows of that individual.
-+ does not yet merge cases where voucher and isolate are identical. 
-
 
 # Requirements
 `bioconda`
