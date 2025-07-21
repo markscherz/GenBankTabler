@@ -41,11 +41,11 @@ or
 where "taxon" is your taxon of interest
 
 # Args
-`--csv_file` the species list you want to get sequences for
-`--taxon` the taxon you want to get all sequences for
-`--email` your Entrez email
-`--min_marker_count` The minimum number of sequences that should be present for a marker to be retained.
-`--merge_on` What to merge specimens based on. Either Isolate, Voucher, or Both. Default: Both
-`--include_unlinked` optional call to keep sequences that do not have vouchers. These are outpuat as separate CSV files for the user to inspect. 
-`--max_seqs` The maximum number of sequences that should be downloaded. Default: 10,000 
-`--auto-confirm` optional argument to bypass sanity check for the number of sequences you are going to download. Use with caution.
++ `--csv_file` the species list you want to get sequences for
++ `--taxon` the taxon you want to get all sequences for
++ `--email` your Entrez email
++ `--min_marker_count` The minimum number of sequences that should be present for a marker to be retained.
++ `--merge_on` What to merge specimens based on. Either Isolate, Voucher, or Both. Default: Both
++ `--include_unlinked` optional call to keep sequences that do not have vouchers. These are outpuat as separate CSV files for the user to inspect. 
++ `--max_seqs` The maximum number of sequences that should be downloaded. Default: 10,000 
++ `--auto-confirm` optional argument to bypass sanity check for the number of sequences you are going to download. Use with caution.
