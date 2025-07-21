@@ -8,6 +8,14 @@ Note that this code is generated entirely in ChatGPT. I hate ChatGPT, so I have 
 
 `pandas`
 
+so depending how you are running python: 
+
+`conda install -c conda-forge biopython`
+
+or 
+
+`pip install pandas biopython`
+
 # Usage
 `python GenBankTabler.py --csv_file species_list.csv --email yourncbiemail@email.com --min_marker_count 5 --merge_on both`
 
