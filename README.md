@@ -5,10 +5,11 @@ Note that this code is generated entirely in ChatGPT. I hate ChatGPT, so I have 
 
 The general idea:
 1. User supplies their NCBI user email and either a --csv_file containing a list of species with one pers line, or --taxon "taxon" 
-2. For each species in the list (-csv_file version), or for an entire taxon (--taxon), all published sequences from GenBank are downloaded that match the search criteria
+2. For each species in the list (-csv_file version), or for an entire taxon (--taxon), all published sequences from GenBank are downloaded that match the search criteria (or sequences up to a given `--max_seqs`, default 10,000). If desired, the user can specify to only keep markers with a certain number of sequences (`--min_marker_count`), which is useful for keeping only markers that will be phylogenetically informative. 
 3. These are split into tables by marker, populating various columns with details from the GenBank metadata
-4. Tables are merged into a single table by Isolate and specimen_voucher (options to use just one or the other are included), retaining information if sequence comes from type
+4. Tables are merged into a single table by Isolate and specimen_voucher (options to use just one or the other are included), retaining information if sequence comes from type specimen.
 5. The resulting table is output. Currently all marker tables are also generated along the way.
+6. If desired, specimens that do not have voucher or isolate numbers are output to separate CSV files of unvouchered sequences, which can be checked by hand.
 
 **Known deficiencies:** 
 + Resulting tables have to be checked manually. Markers that deviate by small name differences (e.g. Rag-1 and Rag1) are not merged into a single column.
