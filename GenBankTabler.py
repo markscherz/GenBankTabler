@@ -3,10 +3,54 @@ import pandas as pd
 from Bio import Entrez, SeqIO
 from collections import defaultdict
 import argparse
+import difflib
 from Bio.Seq import UndefinedSequenceError
 
 # -------------------------
-# Function: Fetch sequences from GenBank for a given taxonomic query
+# Default marker aliases (alias -> canonical)
+# -------------------------
+DEFAULT_CANONICAL_ALIASES = {
+    "COI": ["COI", "CO1", "COX1", "COXI"],
+    "16S": ["16S", "16S RRNA", "16S RIBOSOMAL RNA", "LARGE SUBUNIT RIBOSOMAL RNA"],
+    "12S": ["12S", "12S RRNA", "12S RIBOSOMAL RNA", "SMALL SUBUNIT RIBOSOMAL RNA"],
+    "RAG1": ["RAG1", "RAG-1"]
+}
+
+DEFAULT_MARKER_LOOKUP = {
+    alias.upper(): canonical
+    for canonical, aliases in DEFAULT_CANONICAL_ALIASES.items()
+    for alias in aliases
+}
+
+# -------------------------
+# Load alias lookup from CSV (alias -> canonical)
+# -------------------------
+def load_marker_lookup_from_csv(path):
+    alias_to_canonical = {}
+    df = pd.read_csv(path, header=None)
+    for _, row in df.iterrows():
+        canonical = row[0].strip().upper()
+        alias = row[1].strip().upper()
+        alias_to_canonical[alias] = canonical
+        alias_to_canonical[canonical] = canonical
+    return alias_to_canonical
+
+# -------------------------
+# Standardize marker name using alias map
+# -------------------------
+def standardize_marker_name(raw_marker, alias_lookup):
+    raw_marker = raw_marker.upper()
+    if raw_marker in alias_lookup:
+        return alias_lookup[raw_marker]
+
+    close_matches = difflib.get_close_matches(raw_marker, alias_lookup.keys(), n=1, cutoff=0.95)
+    if close_matches:
+        return alias_lookup[close_matches[0]]
+
+    return raw_marker
+
+# -------------------------
+# Fetch sequences from GenBank
 # -------------------------
 def fetch_genbank_records(query, email, max_seqs, auto_confirm):
     Entrez.email = email
@@ -44,9 +88,9 @@ def fetch_genbank_records(query, email, max_seqs, auto_confirm):
     return all_seqs
 
 # -------------------------
-# Function: Extract marker name directly from gene/product qualifiers, prefer gene
+# Extract marker name
 # -------------------------
-def extract_marker(record):
+def extract_marker(record, alias_lookup):
     is_mito = False
     for feature in record.features:
         if feature.type == "source" and "organelle" in feature.qualifiers:
@@ -54,22 +98,29 @@ def extract_marker(record):
                 is_mito = True
                 break
 
+    marker_name = None
     for feature in record.features:
         if feature.type in ["gene", "CDS", "misc_feature", "rRNA", "tRNA", "ncRNA"]:
             if "gene" in feature.qualifiers:
                 marker_name = feature.qualifiers["gene"][0].strip().upper()
-                return ("_MITO_" + marker_name) if is_mito else marker_name
+                break
 
-    for feature in record.features:
-        if feature.type in ["gene", "CDS", "misc_feature", "rRNA", "tRNA", "ncRNA"]:
-            if "product" in feature.qualifiers:
-                marker_name = feature.qualifiers["product"][0].strip().upper()
-                return ("_MITO_" + marker_name) if is_mito else marker_name
+    if marker_name is None:
+        for feature in record.features:
+            if feature.type in ["gene", "CDS", "misc_feature", "rRNA", "tRNA", "ncRNA"]:
+                if "product" in feature.qualifiers:
+                    marker_name = feature.qualifiers["product"][0].strip().upper()
+                    break
 
-    return "Unknown"
+    if not marker_name:
+        return "Unknown"
+
+    mito_prefix = "_MITO_" if is_mito else ""
+    standardized = standardize_marker_name(marker_name, alias_lookup)
+    return mito_prefix + standardized
 
 # -------------------------
-# Function: Extract metadata from GenBank record
+# Extract metadata
 # -------------------------
 def extract_metadata(record, fallback_species):
     isolate = record.annotations.get("isolate", "")
@@ -118,16 +169,16 @@ def extract_metadata(record, fallback_species):
     return metadata
 
 # -------------------------
-# Function: Process species list file
+# Process species list
 # -------------------------
-def process_species_list(csv_path, email, min_marker_count=0, include_unlinked=False, max_seqs=10000, auto_confirm=False):
+def process_species_list(csv_path, email, min_marker_count=0, include_unlinked=False, max_seqs=10000, auto_confirm=False, alias_lookup=None):
     species_df = pd.read_csv(csv_path, header=None, names=["Species"])
     marker_tables = defaultdict(list)
 
     for species in species_df["Species"]:
         records = fetch_genbank_records(species, email, max_seqs, auto_confirm)
         for record in records:
-            marker = extract_marker(record)
+            marker = extract_marker(record, alias_lookup)
             metadata = extract_metadata(record, species)
             if metadata is not None:
                 marker_tables[marker].append(metadata)
@@ -135,15 +186,15 @@ def process_species_list(csv_path, email, min_marker_count=0, include_unlinked=F
     return finalize_marker_tables(marker_tables, min_marker_count, include_unlinked)
 
 # -------------------------
-# Function: Process a single taxon (any level)
+# Process taxon
 # -------------------------
-def process_taxon(taxon_name, email, min_marker_count=0, include_unlinked=False, max_seqs=10000, auto_confirm=False):
+def process_taxon(taxon_name, email, min_marker_count=0, include_unlinked=False, max_seqs=10000, auto_confirm=False, alias_lookup=None):
     records = fetch_genbank_records(taxon_name, email, max_seqs, auto_confirm)
     marker_tables = defaultdict(list)
 
     for record in records:
         species_name = record.annotations.get("organism", taxon_name)
-        marker = extract_marker(record)
+        marker = extract_marker(record, alias_lookup)
         metadata = extract_metadata(record, species_name)
         if metadata is not None:
             marker_tables[marker].append(metadata)
@@ -151,7 +202,7 @@ def process_taxon(taxon_name, email, min_marker_count=0, include_unlinked=False,
     return finalize_marker_tables(marker_tables, min_marker_count, include_unlinked)
 
 # -------------------------
-# Finalize and sort marker tables
+# Finalize marker tables
 # -------------------------
 def finalize_marker_tables(marker_tables, min_marker_count, include_unlinked):
     sorted_markers = sorted(marker_tables.keys(), key=lambda x: (not x.startswith("_MITO_"), x))
@@ -238,20 +289,25 @@ def main():
 
     parser.add_argument("--email", required=True, help="Email for NCBI Entrez")
     parser.add_argument("--min_marker_count", type=int, default=0, help="Remove marker tables with fewer than this number of entries")
-    parser.add_argument("--merge_on", choices=["Isolate", "Specimen_Voucher", "both"], default="both",
-                        help="Column(s) to merge marker tables on")
+    parser.add_argument("--merge_on", choices=["Isolate", "Specimen_Voucher", "both"], default="both", help="Column(s) to merge marker tables on")
     parser.add_argument("--output", default="merged_output.csv", help="Output file for merged data")
     parser.add_argument("--include_unlinked", action="store_true", help="Include sequences without isolate or voucher info as separate tables")
     parser.add_argument("--max_seqs", type=int, default=10000, help="Maximum number of sequences to download per search. Use -1 for unlimited.")
     parser.add_argument("--auto_confirm", action="store_true", help="Skip confirmation prompt before downloading sequences")
+    parser.add_argument("--marker_aliases", help="Optional CSV file with canonical marker name in column 1 and alias in column 2")
 
     args = parser.parse_args()
     max_seqs = None if args.max_seqs == -1 else args.max_seqs
 
-    if args.csv_file:
-        marker_dfs = process_species_list(args.csv_file, args.email, args.min_marker_count, args.include_unlinked, max_seqs, args.auto_confirm)
+    if args.marker_aliases:
+        alias_lookup = load_marker_lookup_from_csv(args.marker_aliases)
     else:
-        marker_dfs = process_taxon(args.taxon, args.email, args.min_marker_count, args.include_unlinked, max_seqs, args.auto_confirm)
+        alias_lookup = DEFAULT_MARKER_LOOKUP
+
+    if args.csv_file:
+        marker_dfs = process_species_list(args.csv_file, args.email, args.min_marker_count, args.include_unlinked, max_seqs, args.auto_confirm, alias_lookup)
+    else:
+        marker_dfs = process_taxon(args.taxon, args.email, args.min_marker_count, args.include_unlinked, max_seqs, args.auto_confirm, alias_lookup)
 
     merged_df = merge_tables(marker_dfs, merge_on=args.merge_on, include_unlinked=args.include_unlinked)
     if not merged_df.empty:
